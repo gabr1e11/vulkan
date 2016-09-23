@@ -7,17 +7,21 @@ UNAME=$(shell uname)
 CXX=g++
 OBJDIR=obj
 
+VULKAN_SDK_PATH=/opt/VulkanSDK/1.0.21.1/
+VULKAN_SDK_INCLUDE=$(VULKAN_SDK_PATH)/x86_64/include/
+VULKAN_SDK_LIB=$(VULKAN_SDK_PATH)/x86_64/lib
+
 #
 #Files to be compiled
 #
 VPATH=.
 
-FILES=main.cpp
+FILES=VulkanEngine.cpp
 
 OBJECTS=$(patsubst %.cpp,$(OBJDIR)/%.o,$(FILES))
 
-CXXFLAGS= -Werror -MMD -O0 -g -I /opt/VulkanSDK/1.0.21.1/x86_64/include -I . -std=c++14
-LDFLAGS+= -L /opt/VulkanSDK/1.0.21.1/x86_64/lib -lvulkan -lglfw3 -lX11 -lXrandr -lXinerama -lXi -lXxf86vm -lXcursor -ldl -pthread -fPIC
+CXXFLAGS= -Werror -MMD -O0 -g -I $(VULKAN_SDK_INCLUDE) -I . -std=c++14
+LDFLAGS+= -L $(VULKAN_SDK_LIB) `pkg-config --static --libs glfw3` -lvulkan
 
 #
 # Main rules
