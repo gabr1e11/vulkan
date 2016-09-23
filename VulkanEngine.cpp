@@ -6,6 +6,7 @@
 #include <functional>
 #include <vector>
 #include <cstring>
+#include <set>
 
 VkResult CreateDebugReportCallbackEXT(VkInstance instance,
                                       const VkDebugReportCallbackCreateInfoEXT* pCreateInfo,
@@ -53,9 +54,24 @@ public:
         return &object;
     }
 
+    T* replace() {
+        cleanup();
+        return &object;
+    }
+
     operator T() const {
         return object;
     }
+
+    void operator=(T rhs) {
+        cleanup();
+        object = rhs;
+    }
+
+    template<typename V>
+        bool operator==(V rhs) {
+            return object == T(rhs);
+        }
 
 private:
     T object{VK_NULL_HANDLE};
@@ -69,6 +85,12 @@ private:
     }
 };
 
+#ifdef NDEBUG
+         const bool enableValidationLayers = false;
+#else
+         const bool enableValidationLayers = true;
+#endif
+
 class VulkanEngine {
     public:
         void run() {
@@ -80,6 +102,24 @@ class VulkanEngine {
     private:
         const int WIDTH = 800;
         const int HEIGHT = 600;
+
+        GLFWwindow* _window;
+        VDeleter<VkInstance> _instance {vkDestroyInstance};
+        VDeleter<VkDebugReportCallbackEXT> _callbackHandle{_instance, DestroyDebugReportCallbackEXT};
+        VDeleter<VkSurfaceKHR> _surface{_instance, vkDestroySurfaceKHR};
+
+        VkPhysicalDevice _physicalDevice;
+        VDeleter<VkDevice> _device{vkDestroyDevice};
+
+        VkQueue _graphicsQueue;
+        VkQueue _presentQueue;
+
+        const std::vector<const char*> _validationLayers = {
+            "VK_LAYER_LUNARG_standard_validation"
+        };
+        const std::vector<const char*> _deviceExtensions = {
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        };
 
         void initWindow() {
             glfwInit();
@@ -93,7 +133,9 @@ class VulkanEngine {
         void initVulkan() {
             createInstance();
             setupDebugCallback();
+            createSurface();
             pickPhysicalDevice();
+            createLogicalDevice();
         }
 
         void mainLoop() {
@@ -154,6 +196,64 @@ class VulkanEngine {
             VkResult result = vkCreateInstance(&createInfo, nullptr, &_instance);
             if (result != VK_SUCCESS) {
                 throw std::runtime_error("ERROR creating Vulkan instance: " + std::to_string(result));
+            }
+        }
+
+        void createLogicalDevice()
+        {
+            QueueFamilyIndices indices = findQueueFamilies(_physicalDevice);
+
+            /* Queue families creation info */
+            std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+            std::set<int> uniqueQueueFamilies = {indices.graphicsFamily, indices.presentFamily};
+
+            float queuePriority = 1.0f;
+            for (auto queueFamily : uniqueQueueFamilies) {
+                VkDeviceQueueCreateInfo queueCreateInfo = {};
+
+                queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+                queueCreateInfo.queueFamilyIndex = queueFamily;
+                queueCreateInfo.queueCount = 1;
+                queueCreateInfo.pQueuePriorities = &queuePriority;
+
+                queueCreateInfos.push_back(queueCreateInfo);
+            }
+
+            /* Logical device creation */
+            VkDeviceCreateInfo createInfo = {};
+            createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+
+            createInfo.pQueueCreateInfos = queueCreateInfos.data();
+            createInfo.queueCreateInfoCount = (uint32_t)queueCreateInfos.size();
+
+            createInfo.ppEnabledExtensionNames = _deviceExtensions.data();
+            createInfo.enabledExtensionCount = _deviceExtensions.size();
+
+            VkPhysicalDeviceFeatures deviceFeatures = {};
+            createInfo.pEnabledFeatures = &deviceFeatures;
+
+            /* Validation layers */
+            createInfo.enabledExtensionCount = 0;
+
+            if (enableValidationLayers) {
+                createInfo.enabledLayerCount = _validationLayers.size();
+                createInfo.ppEnabledLayerNames = _validationLayers.data();
+            } else {
+                createInfo.enabledLayerCount = 0;
+            }
+
+            if (vkCreateDevice(_physicalDevice, &createInfo, nullptr, _device.replace()) != VK_SUCCESS) {
+                throw std::runtime_error("ERROR failed to create logical device!");
+            }
+
+            vkGetDeviceQueue(_device, indices.graphicsFamily, 0, &_graphicsQueue);
+            vkGetDeviceQueue(_device, indices.presentFamily, 0, &_presentQueue);
+        }
+
+        void createSurface()
+        {
+            if (glfwCreateWindowSurface(_instance, _window, nullptr, _surface.replace()) != VK_SUCCESS) {
+                throw std::runtime_error("ERROR failed to create window surface!");
             }
         }
 
@@ -243,6 +343,37 @@ class VulkanEngine {
             std::vector<VkPhysicalDevice> devices(deviceCount);
             vkEnumeratePhysicalDevices(_instance, &deviceCount, devices.data());
 
+            /* Show physical devices on screen */
+            for (const auto& device : devices) {
+                VkPhysicalDeviceProperties props;
+                vkGetPhysicalDeviceProperties(device, &props);
+
+                fprintf(stderr, "[%s] physical device\n", props.deviceName);
+                fprintf(stderr, "\tAPI version:    %08x\n", props.apiVersion);
+                fprintf(stderr, "\tDriver version: %08x\n", props.driverVersion);
+                fprintf(stderr, "\tVendor ID:      %08x\n", props.vendorID);
+                switch (props.deviceType) {
+                    case VK_PHYSICAL_DEVICE_TYPE_OTHER:
+                        fprintf(stderr,  "\tType:           Other\n");
+                        break;
+                    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+                        fprintf(stderr,  "\tType:           Integrated GPU\n");
+                        break;
+                    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+                        fprintf(stderr,  "\tType:           Discrete GPU\n");
+                        break;
+                    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+                        fprintf(stderr,  "\tType:           Virtual GPU\n");
+                        break;
+                    case VK_PHYSICAL_DEVICE_TYPE_CPU:
+                        fprintf(stderr,  "\tType:           CPU\n");
+                        break;
+                    default:
+                        fprintf(stderr,  "\tType:           Unknown\n");
+                }
+            }
+
+            /* Pick the device */
             for (const auto& device : devices) {
                 if (isDeviceSuitable(device)) {
                     _physicalDevice = device;
@@ -263,12 +394,31 @@ class VulkanEngine {
             VkPhysicalDeviceFeatures deviceFeatures;
             vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
 
-
             QueueFamilyIndices indices = findQueueFamilies(device);
 
+            bool extensionsSupported = checkDeviceExtensionsSupport(device);
+
             return deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
-                deviceFeatures.geometryShader &&
-                indices.isComplete();
+                   extensionsSupported &&
+                   deviceFeatures.geometryShader &&
+                   indices.isComplete();
+        }
+
+        bool checkDeviceExtensionsSupport(VkPhysicalDevice device)
+        {
+            uint32_t extensionCount;
+            vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+
+            std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+            vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
+
+            std::set<std::string> requiredExtensions(_deviceExtensions.begin(), _deviceExtensions.end());
+
+            for (const auto& extension : availableExtensions) {
+                requiredExtensions.erase(extension.extensionName);
+            }
+
+            return requiredExtensions.empty();
         }
 
         static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -287,9 +437,10 @@ class VulkanEngine {
 
         struct QueueFamilyIndices {
             int graphicsFamily = -1;
+            int presentFamily = -2;
 
             bool isComplete() {
-                return graphicsFamily >= 0;
+                return graphicsFamily >= 0 && presentFamily >= 0;
             }
         };
 
@@ -309,6 +460,13 @@ class VulkanEngine {
                     indices.graphicsFamily = i;
                 }
 
+                VkBool32 presentSupport = false;
+                vkGetPhysicalDeviceSurfaceSupportKHR(device, i, _surface, &presentSupport);
+
+                if (queueFamily.queueCount > 0 && presentSupport) {
+                    indices.presentFamily = i;
+                }
+
                 if (indices.isComplete()) {
                     break;
                 }
@@ -319,21 +477,6 @@ class VulkanEngine {
             return indices;
         }
 
-        GLFWwindow* _window;
-        VDeleter<VkInstance> _instance {vkDestroyInstance};
-        VDeleter<VkDebugReportCallbackEXT> _callbackHandle{_instance, DestroyDebugReportCallbackEXT};
-        VkPhysicalDevice _physicalDevice;
-
-        const std::vector<const char*> _validationLayers = {
-            "VK_LAYER_LUNARG_standard_validation"
-        };
-
-
-#ifdef NDEBUG
-         const bool enableValidationLayers = false;
-#else
-         const bool enableValidationLayers = true;
-#endif
 };
 
 int main() {
